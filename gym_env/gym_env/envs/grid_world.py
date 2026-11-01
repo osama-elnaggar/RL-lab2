@@ -49,6 +49,7 @@ class GridWorldEnv(gym.Env):
         return {
             "agent": self._agent_location,
             "target": self._target_location,
+            "bad1": self._bad1_location,
             "bad2": self._bad2_location,
         }
 
