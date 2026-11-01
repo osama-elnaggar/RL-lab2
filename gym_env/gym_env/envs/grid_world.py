@@ -19,46 +19,38 @@ class GridWorldEnv(gym.Env):
         self.size = size  # The size of the square grid
         self.window_size = 512  # The size of the PyGame window
 
-        # Observations are dictionaries with the agent's and the target's location.
-        # Each location is encoded as an element of {0, ..., `size`}^2,
-        # i.e. MultiDiscrete([size, size]).
+        # Observations are dictionaries with the agent's, target's, and 2 bad cells' locations (8 discrete integers total).
         self.observation_space = spaces.Dict(
             {
                 "agent": spaces.Box(0, size - 1, shape=(2,), dtype=int),
                 "target": spaces.Box(0, size - 1, shape=(2,), dtype=int),
+                "bad1": spaces.Box(0, size - 1, shape=(2,), dtype=int),
+                "bad2": spaces.Box(0, size - 1, shape=(2,), dtype=int),
             }
         )
 
-        # We have 4 actions, corresponding to "right", "up", "left", "down", "right"
+        # We have 4 actions, corresponding to "right", "up", "left", "down"
         self.action_space = spaces.Discrete(4)
 
-        """
-        The following dictionary maps abstract actions from `self.action_space` to 
-        the direction we will walk in if that action is taken.
-        i.e. 0 corresponds to "right", 1 to "up" etc.
-        """
         self._action_to_direction = {
             Actions.right.value: np.array([1, 0]),
-            Actions.up.value: np.array([0, 1]),
+            Actions.up.value: np.array([0, -1]),
             Actions.left.value: np.array([-1, 0]),
-            Actions.down.value: np.array([0, -1]),
+            Actions.down.value: np.array([0, 1]),
         }
 
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
 
-        """
-        If human-rendering is used, `self.window` will be a reference
-        to the window that we draw to. `self.clock` will be a clock that is used
-        to ensure that the environment is rendered at the correct framerate in
-        human-mode. They will remain `None` until human-mode is used for the
-        first time.
-        """
         self.window = None
         self.clock = None
 
     def _get_obs(self):
-        return {"agent": self._agent_location, "target": self._target_location}
+        return {
+            "agent": self._agent_location,
+            "target": self._target_location,
+            "bad2": self._bad2_location,
+        }
 
     def _get_info(self):
         return {
@@ -74,11 +66,31 @@ class GridWorldEnv(gym.Env):
         # Choose the agent's location uniformly at random
         self._agent_location = self.np_random.integers(0, self.size, size=2, dtype=int)
 
-        # We will sample the target's location randomly until it does not
-        # coincide with the agent's location
+        # Sample target's location until it does not coincide with agent
         self._target_location = self._agent_location
         while np.array_equal(self._target_location, self._agent_location):
             self._target_location = self.np_random.integers(
+                0, self.size, size=2, dtype=int
+            )
+
+        # Sample bad1's location until it does not coincide with agent or target
+        self._bad1_location = self._agent_location
+        while (
+            np.array_equal(self._bad1_location, self._agent_location)
+            or np.array_equal(self._bad1_location, self._target_location)
+        ):
+            self._bad1_location = self.np_random.integers(
+                0, self.size, size=2, dtype=int
+            )
+
+        # Sample bad2's location until it does not coincide with agent, target, or bad1
+        self._bad2_location = self._agent_location
+        while (
+            np.array_equal(self._bad2_location, self._agent_location)
+            or np.array_equal(self._bad2_location, self._target_location)
+            or np.array_equal(self._bad2_location, self._bad1_location)
+        ):
+            self._bad2_location = self.np_random.integers(
                 0, self.size, size=2, dtype=int
             )
 
@@ -97,9 +109,21 @@ class GridWorldEnv(gym.Env):
         self._agent_location = np.clip(
             self._agent_location + direction, 0, self.size - 1
         )
-        # An episode is done iff the agent has reached the target
-        terminated = np.array_equal(self._agent_location, self._target_location)
-        reward = 1 if terminated else 0  # Binary sparse rewards
+
+        # Check if the agent reached the target (+1) or a bad cell (-1)
+        reached_target = np.array_equal(self._agent_location, self._target_location)
+        reached_bad = np.array_equal(
+            self._agent_location, self._bad1_location
+        ) or np.array_equal(self._agent_location, self._bad2_location)
+
+        terminated = bool(reached_target or reached_bad)
+        if reached_target:
+            reward = 1
+        elif reached_bad:
+            reward = -1
+        else:
+            reward = 0
+
         observation = self._get_obs()
         info = self._get_info()
 
@@ -126,16 +150,28 @@ class GridWorldEnv(gym.Env):
             self.window_size / self.size
         )  # The size of a single grid square in pixels
 
-        # First we draw the target
+        # First we draw the target (Green)
         pygame.draw.rect(
             canvas,
-            (255, 0, 0),
+            (0, 200, 0),
             pygame.Rect(
                 pix_square_size * self._target_location,
                 (pix_square_size, pix_square_size),
             ),
         )
-        # Now we draw the agent
+
+        # Draw the 2 bad cells (Red)
+        for bad_loc in [self._bad1_location, self._bad2_location]:
+            pygame.draw.rect(
+                canvas,
+                (255, 0, 0),
+                pygame.Rect(
+                    pix_square_size * bad_loc,
+                    (pix_square_size, pix_square_size),
+                ),
+            )
+
+        # Now we draw the agent (Blue circle)
         pygame.draw.circle(
             canvas,
             (0, 0, 255),
@@ -161,14 +197,9 @@ class GridWorldEnv(gym.Env):
             )
 
         if self.render_mode == "human":
-            # The following line copies our drawings from `canvas` to the visible window
             self.window.blit(canvas, canvas.get_rect())
             pygame.event.pump()
             pygame.display.update()
-
-            # We need to ensure that human-rendering occurs at the predefined framerate.
-            # The following line will automatically add a delay to
-            # keep the framerate stable.
             self.clock.tick(self.metadata["render_fps"])
         else:  # rgb_array
             return np.transpose(
